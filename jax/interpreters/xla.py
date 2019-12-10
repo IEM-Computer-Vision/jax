@@ -38,7 +38,7 @@ from ..abstract_arrays import (ConcreteArray, ShapedArray, AbstractToken,
                                abstract_token, make_abstract_python_scalar)
 from ..core import valid_jaxtype, Literal
 from ..util import (partial, partialmethod, cache, safe_map, prod, unzip2,
-                    memoize, subvals)
+                    memoize, subvals, taggedtuple)
 from ..lib import xla_bridge as xb
 from ..lib import xla_client as xc
 from . import partial_eval as pe
@@ -98,11 +98,11 @@ def identity(x): return x
 #              [0., 1., 2.]], dtype=float32)
 
 LazyExpr = namedtuple('LazyExpr', ['input', 'shape', 'dims'])
-LazyArrayVar = namedtuple('ArrayVar', [])
-LazyIota = namedtuple('Iota', ['dtype', 'size'])           # like np.arange(N)
-LazyEye = namedtuple('Eye', ['dtype', 'shape', 'offset'])  # like np.eye
-LazyTri = namedtuple('Tri', ['dtype', 'shape', 'offset'])  # like np.tri
-LazyDelta = namedtuple('Delta', ['dtype', 'shape'])  # kronecker delta arrays
+LazyArrayVar = taggedtuple('ArrayVar', [])
+LazyIota = taggedtuple('Iota', ['dtype', 'size'])           # like np.arange(N)
+LazyEye = taggedtuple('Eye', ['dtype', 'shape', 'offset'])  # like np.eye
+LazyTri = taggedtuple('Tri', ['dtype', 'shape', 'offset'])  # like np.tri
+LazyDelta = taggedtuple('Delta', ['dtype', 'shape'])  # kronecker delta arrays
 
 def lazy_array(shape):
   return LazyExpr(LazyArrayVar(), shape, tuple(range(len(shape))))
@@ -230,8 +230,6 @@ def stage_lazy_expr(c, lazy_expr, x):
     x = c.Transpose(x, perm)
   if shape != c.GetShape(x).dimensions():
     x = c.BroadcastInDim(x, shape, bcast_dims)
-
-  c.GetShape(x)  # force shape checking
 
   return x
 
@@ -1021,7 +1019,7 @@ def _device_array_constant_handler(c, val, canonicalize_types=True):
   if val.device_buffer is device_constant:
     return stage_lazy_expr(c, val._lazy_expr, None)
   else:
-    base_val = c.Constant(val._value)
+    base_val = c.Constant(val.device_buffer.to_py())
     return stage_lazy_expr(c, val._lazy_expr, base_val)
 xb.register_constant_handler(DeviceArray, _device_array_constant_handler)
 

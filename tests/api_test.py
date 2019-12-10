@@ -1779,7 +1779,21 @@ class LazyTest(jtu.JaxTestCase):
         op = random_op(rng, onp.shape(onp_x))
         onp_x = op.onp_fn(onp_x)
         jax_x = op.jax_fn(jax_x)
-    self.assertAllClose(onp_x, jax_x, check_dtypes=False)
+
+    kind = rng.choice(['closure', 'npy_value', 'force', 'add'])
+    if kind == 'closure':
+      result = api.jit(lambda x: x + jax_x)(0)
+      self.assertAllClose(onp_x, result, check_dtypes=False)
+    elif kind == 'npy_value':
+      self.assertAllClose(onp_x, jax_x, check_dtypes=False)
+    elif kind == 'force':
+      result = xla.force(jax_x)
+      self.assertAllClose(onp_x, result, check_dtypes=False)
+    elif kind == 'add':
+      result = jax_x + onp.zeros(jax_x.shape, dtype=jax_x.dtype)
+      self.assertAllClose(onp_x, result, check_dtypes=False)
+    else:
+      assert False
 
 
 if __name__ == '__main__':

@@ -19,6 +19,7 @@ from __future__ import print_function
 import collections
 import functools
 import itertools as it
+import operator as op
 import types
 
 import fastcache
@@ -226,3 +227,12 @@ def subvals(lst, replace):
   for i, v in replace:
     lst[i] = v
   return tuple(lst)
+
+def taggedtuple(name, fields):
+  """Lightweight version of namedtuple where equality depends on the type."""
+  def __new__(cls, *xs):
+    return tuple.__new__(cls, (cls,) + xs)
+  class_namespace = {'__new__' : __new__}
+  for i, f in enumerate(fields):
+    class_namespace[f] = property(op.itemgetter(i+1))
+  return type(name, (tuple,), class_namespace)
