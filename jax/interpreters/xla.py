@@ -36,7 +36,7 @@ from .. import linear_util as lu
 from ..abstract_arrays import (ConcreteArray, ShapedArray, AbstractToken,
                                make_shaped_array, array_types, raise_to_shaped,
                                abstract_token, make_abstract_python_scalar)
-from ..core import valid_jaxtype, Literal
+from ..core import valid_jaxtype, Literal, AbstractValue
 from ..util import (partial, partialmethod, cache, safe_map, prod, unzip2,
                     memoize, subvals, taggedtuple)
 from ..lib import xla_bridge as xb
@@ -96,6 +96,9 @@ def identity(x): return x
 #              [0., 1., 2.],
 #              [0., 1., 2.],
 #              [0., 1., 2.]], dtype=float32)
+#
+# For performance, some functions on lazy expressions accept None as an input to
+# stand for the identity lazy expression.
 
 LazyExpr = namedtuple('LazyExpr', ['input', 'shape', 'dims'])
 LazyArrayVar = taggedtuple('ArrayVar', [])
@@ -121,28 +124,32 @@ def lazy_tri(dtype, shape, offset):
 def lazy_delta(dtype, shape):
   return LazyExpr(LazyDelta(dtype, shape), shape, tuple(range(len(shape))))
 
-def lazy_broadcast(lazy_expr, shape, broadcast_dimensions):
+def lazy_broadcast(lexpr, shape, broadcast_dimensions):
   new_dims = [None] * len(shape)
   for i, d in enumerate(broadcast_dimensions):
-    new_dims[d] = lazy_expr.dims[i]
-  return LazyExpr(lazy_expr.input, shape, tuple(new_dims))
+    new_dims[d] = lexpr.dims[i]
+  return LazyExpr(lexpr.input, shape, tuple(new_dims))
 
-def lazy_transpose(lazy_expr, perm):
-  new_shape = tuple(lazy_expr.shape[i] for i in perm)
-  new_dims = tuple(lazy_expr.dims[i] for i in perm)
-  return LazyExpr(lazy_expr.input, new_shape, new_dims)
+def lazy_transpose(lexpr, perm):
+  new_shape = tuple(lexpr.shape[i] for i in perm)
+  new_dims = tuple(lexpr.dims[i] for i in perm)
+  return LazyExpr(lexpr.input, new_shape, new_dims)
 
-def eval_lazy_expr(lazy_expr, x):
+def lazy_constant(lexpr):
+  return lexpr is not None and type(lexpr.input) is not LazyArrayVar
+
+
+def eval_lexpr(lexpr, x):
   """Evaluate a lazy expression using NumPy.
 
   Args:
-    lazy_expr: the LazyExpr to evaluate.
+    lexpr: the LazyExpr to evaluate.
     x: ndarray or None, representing the value of ArrayVar if present.
 
   Returns:
     An ndarray representing the value of the lazy expression.
   """
-  input_, shape, dims = lazy_expr
+  input_, shape, dims = lexpr
 
   # first create a starting ndarray from input_
   t = type(input_)
@@ -178,21 +185,21 @@ def eval_lazy_expr(lazy_expr, x):
 
   return x
 
-def stage_lazy_expr(c, lazy_expr, x):
+def stage_lexpr(c, lexpr, x):
   """Stage a lazy expression into an XLA computation.
 
   Args:
     c: XLA ComputationBuilder into which to stage the expression.
-    lazy_expr: a LazyExpr to evaluate (or None for the identity expression).
+    lexpr: a LazyExpr to evaluate (or None for the identity expression).
     x: XlaOp or None, representing the value of ArrayVar if present.
 
   Returns:
     An XlaOp representing the value of the lazy expression.
   """
-  if lazy_expr is None:
+  if lexpr is None:
     return x
 
-  input_, shape, dims = lazy_expr
+  input_, shape, dims = lexpr
 
   # first create a starting XlaOp from input_
   t = type(input_)
@@ -234,30 +241,16 @@ def stage_lazy_expr(c, lazy_expr, x):
   return x
 
 
-# An ArgSpec is a triple consisting of an AbstractValue representing a set of
-# logical arguments, a LazyExpr (or None) representing an expression in the lazy
-# sublanguage, and an XlaShape (or None) representing the physical shape of the
-# environment of the lazy expression (consisting of at most a single array).
-# ArgSpec instances are used as part of the cache key for cached computations.
-ArgSpec = namedtuple("ArgSpec", ["aval", "lazy_expr", "xla_shape"])
-
+# An argument specification is an abstract value paired with the lazy expression
+# used to construct the argument value. We use raw tuples rather than
+# namedtuples here because they're faster to construct, and this code is in the
+# "cache hit" critical path.
 def arg_spec(x):
-  # For performance reasons, the return type of this function is polymorphic:
-  # if the input has a lazy_expr attached, the return type is a raw tuple
-  # modeling an ArgSpec namedtuple; otherwise, it's an AbstractValue. We use a
-  # raw tuple rather than an ArgSpec instance for performance reasons; the tuple
-  # is mapped to an ArgSpec instance underneath memoized functions.
   aval = abstractify(x)
   try:
-    lazy_expr = x._lazy_expr
-  except AttributeError:
-    return aval
-  else:
-    if x.device_buffer is device_constant:
-      xla_shape = None
-    else:
-      xla_shape = x.device_buffer.shape()
-    return aval, x._lazy_expr, xla_shape
+    return aval, x._lazy_expr
+  except:
+    return aval, None
 
 
 ### handlers
@@ -348,16 +341,10 @@ def apply_primitive(prim, *args, **params):
 
 @cache()
 def xla_primitive_callable(prim, *arg_specs, **params):
-  # For performance, we allow the elements of arg_specs either to be triples
-  # modeling ArgSpec instances or abstract values. Here we canonicalize them.
-  arg_specs = [ArgSpec(x, None, aval_to_xla_shape(x))
-               if isinstance(x, core.AbstractValue) else ArgSpec(*x)
-               for x in arg_specs]
-
   if FLAGS.jax_log_compiles:
     print("Compiling {} for args {}.".format(prim.name, arg_specs))
   backend = params.get('backend', None)
-  avals_in = [s.aval for s in arg_specs]
+  avals_in, _ = unzip2(arg_specs)
   aval_out = prim.abstract_eval(*avals_in, **params)
   if prim.multiple_results:
     handlers = tuple(map(aval_to_result_handler, aval_out))
@@ -372,7 +359,7 @@ def xla_primitive_callable(prim, *arg_specs, **params):
 @cache()
 def primitive_computation(prim, *avals, **params):
   # This function is used when compiling sub-computations, like in reductions.
-  arg_specs = [ArgSpec(a, None, aval_to_xla_shape(a)) for a in avals]
+  arg_specs = [(aval, None) for aval in avals]
   return _primitive_computation(prim, *arg_specs, **params)
 
 def _primitive_computation(prim, *arg_specs, **params):
@@ -405,13 +392,26 @@ def _primitive_computation(prim, *arg_specs, **params):
     raise RuntimeError(msg)
 
 def _xla_callable_args_lazy(c, arg_specs):
-  raw_args = (c.ParameterWithShape(s.xla_shape) for s in arg_specs
-              if s.aval is not abstract_token and s.xla_shape is not None)
-  xla_args = [stage_lazy_expr(c, s.lazy_expr, s.xla_shape and next(raw_args))
-              if s.aval is not abstract_token else c.CreateToken()
-              for s in arg_specs]
-  assert next(raw_args, None) is None
+  raw_args = [c.ParameterWithShape(_xla_shape(aval, lexpr))
+              for aval, lexpr in arg_specs
+              if aval is not abstract_token and not lazy_constant(lexpr)]
+  args = iter(raw_args)
+  xla_args = [stage_lexpr(c, lexpr, None if lazy_constant(lexpr) else next(args))
+              if aval is not abstract_token else c.CreateToken()
+              for aval, lexpr in arg_specs]
+  assert next(args, None) is None
   return xla_args
+
+def _xla_shape(aval, lexpr):
+  assert not lazy_constant(lexpr)
+  if lexpr is None:
+    return aval_to_xla_shape(aval)
+  else:
+    idxs = [(src, dst) for dst, src in enumerate(lexpr.dims) if src is not None]
+    input_shape = [None] * len(idxs)
+    for src, dst in idxs:
+      input_shape[src] = aval.shape[dst]
+    return aval_to_xla_shape(ShapedArray(tuple(input_shape), aval.dtype))
 
 def _execute_compiled_primitive(prim, compiled, backend, result_handler, *args):
   device, = compiled.local_devices()
@@ -891,7 +891,7 @@ class DeviceArray(DeviceValue):
     self._check_if_deleted()
     if self._npy_value is None:
       if self.device_buffer is device_constant:
-        self._npy_value = eval_lazy_expr(self._lazy_expr, None)
+        self._npy_value = eval_lexpr(self._lazy_expr, None)
       else:
         self._npy_value = force(self).device_buffer.to_py()
       self._npy_value.flags.writeable = False
@@ -1017,10 +1017,10 @@ canonicalize_dtype_handlers[DeviceArray] = identity
 
 def _device_array_constant_handler(c, val, canonicalize_types=True):
   if val.device_buffer is device_constant:
-    return stage_lazy_expr(c, val._lazy_expr, None)
+    return stage_lexpr(c, val._lazy_expr, None)
   else:
     base_val = c.Constant(val.device_buffer.to_py())
-    return stage_lazy_expr(c, val._lazy_expr, base_val)
+    return stage_lexpr(c, val._lazy_expr, base_val)
 xb.register_constant_handler(DeviceArray, _device_array_constant_handler)
 
 def _device_put_device_array(x, device):
