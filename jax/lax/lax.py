@@ -1070,7 +1070,9 @@ def full(shape, fill_value, dtype=None):
     msg = "full must be called with scalar fill_value, got fill_value.shape {}."
     raise TypeError(msg.format(onp.shape(fill_value)))
   dtype = dtypes.canonicalize_dtype(dtype or _dtype(fill_value))
-  return broadcast(convert_element_type(fill_value, dtype), shape)
+  # TODO(mattjj): remove device_put when dtype conversion produces DeviceArray
+  fill_value = xla.device_put_p.bind(convert_element_type(fill_value, dtype))
+  return broadcast(fill_value, shape)
 
 def iota(dtype, size):
   """Wraps XLA's `Iota
