@@ -1092,10 +1092,12 @@ def broadcasted_iota(dtype, shape, dimension):
   dimension = int(dimension)
   return broadcast_in_dim(iota(dtype, shape[dimension]), shape, [dimension])
 
-def eye(dtype, shape, offset):
-  """Like numpy.eye, create a 2D array with ones on a diagonal."""
-  # This function exists for creating lazy identity matrices, particularly for
-  # use in jax.numpy.eye.
+def _eye(dtype, shape, offset):
+  """Like numpy.eye, create a 2D array with ones on a diagonal.
+
+  This function exists for creating lazy identity matrices; that is,
+  materialization of the array is delayed and it may be fused into consumers to
+  avoid materialization at all."""
   N, M = tuple(map(int, shape))
   offset = int(offset)
   dtype = dtypes.canonicalize_dtype(dtype)
@@ -1103,10 +1105,10 @@ def eye(dtype, shape, offset):
   aval = ShapedArray((N, M), dtype)
   return xla.DeviceArray(aval, lazy_expr, xla.device_constant)
 
-def delta(dtype, shape, axes):
-  # This function exists for creating lazy Kronecker delta arrays, particularly
-  # for use in jax.numpy.einsum to express traces. It differs from ``eye`` in
-  # that it can create arrays of any rank, but doesn't allow offsets.
+def _delta(dtype, shape, axes):
+  """This function exists for creating lazy Kronecker delta arrays, particularly
+  for use in jax.numpy.einsum to express traces. It differs from ``eye`` in that
+  it can create arrays of any rank, but doesn't allow offsets."""
   shape = tuple(map(int, shape))
   axes = tuple(map(int, axes))
   dtype = dtypes.canonicalize_dtype(dtype)
@@ -1114,12 +1116,12 @@ def delta(dtype, shape, axes):
   lazy_expr = xla.lazy_broadcast(xla.lazy_delta(dtype, base_shape), shape, axes)
   aval = ShapedArray(shape, dtype)
   return xla.DeviceArray(aval, lazy_expr, xla.device_constant)
-broadcasted_eye = delta
 
-def tri(dtype, shape, offset):
-  """Like numpy.tri, create a 2D array with ones below a diagonal."""
-  # This function exists for creating lazy triangular matrices, particularly for
-  # use in jax.numpy.tri.
+def _tri(dtype, shape, offset):
+  """Like numpy.tri, create a 2D array with ones below a diagonal.
+
+  This function exists for creating lazy triangular matrices, particularly for
+  use in jax.numpy.tri."""
   N, M = tuple(map(int, shape))
   offset = int(offset)
   dtype = dtypes.canonicalize_dtype(dtype)

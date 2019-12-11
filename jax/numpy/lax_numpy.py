@@ -1748,7 +1748,7 @@ def eye(N, M=None, k=0, dtype=None):
   if N < 0 or M < 0:
     msg = "negative dimensions are not allowed, got {} and {}"
     raise ValueError(msg.format(N, M))
-  return lax.eye(dtype, (N, M), k)
+  return lax._eye(dtype, (N, M), k)
 
 
 @_wraps(onp.identity)
@@ -2001,7 +2001,7 @@ def tri(N, M=None, k=0, dtype=None):
   M = M if M is not None else N
   dtype = dtype or float32
   k = int(k or 0)
-  return lax.tri(dtype, (N, M), k)
+  return lax._tri(dtype, (N, M), k)
 
 
 @_wraps(onp.tril)
@@ -2250,7 +2250,7 @@ def _einsum(operands, contractions, precision):
     for name, count in counts.items():
       if count > 1:
         axes = [i for i, n in enumerate(names) if n == name]
-        eye = lax.broadcasted_eye(operand.dtype, operand.shape, axes)
+        eye = lax._delta(operand.dtype, operand.shape, axes)
         if name not in keep_names:
           operand = sum(operand * eye, axes)
           names = names.replace(name, '')
