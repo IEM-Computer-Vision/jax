@@ -94,7 +94,8 @@ def _unpack_tuple(f, n):
 
 # primitives
 
-_cpu_lapack_types = {np.float32, np.float64, np.complex64, np.complex128}
+_cpu_lapack_types = {onp.dtype(onp.float32), onp.dtype(onp.float64),
+                     onp.dtype(onp.complex64), onp.dtype(onp.complex128)}
 
 # Cholesky decomposition
 
@@ -134,20 +135,31 @@ def _nan_like(c, operand):
     nan = c.Constant(onp.array(onp.nan, dtype=dtype))
   return c.Broadcast(nan, shape.dimensions())
 
-def cholesky_cpu_translation_rule(c, operand):
+# TODO(phawkins): remove supports_batching argument after the minimum jaxlib
+# version is 0.1.38.
+def _cholesky_cpu_gpu_translation_rule(potrf_impl, potrf_supports_batching, c,
+                                       operand):
   shape = c.GetShape(operand)
+  batch_dims = shape.dimensions()[:-2]
   dtype = shape.element_type().type
-  if len(shape.dimensions()) == 2 and dtype in _cpu_lapack_types:
-    result, info = lapack.potrf(c, operand, lower=True)
-    return c.Select(c.Eq(info, c.ConstantS32Scalar(0)), result,
-                    _nan_like(c, result))
+  if len(batch_dims) == 0 or potrf_supports_batching:
+    result, info = potrf_impl(c, operand, lower=True)
+    ok = c.Eq(info, c.ConstantS32Scalar(0))
+    return _broadcasting_select(c,
+                                c.Reshape(ok, None, batch_dims + (1, 1)), result,
+                                _nan_like(c, result))
   else:
-    # Fall back to the HLO implementation for batched Cholesky decomposition or
-    # unsupported types.
-    # TODO(phawkins): support LAPACK primitives in batched mode.
+    # Fall back to the HLO implementation for batched Cholesky decomposition.
     return c.Cholesky(operand)
 
-xla.backend_specific_translations['cpu'][cholesky_p] = cholesky_cpu_translation_rule
+xla.backend_specific_translations['cpu'][cholesky_p] = partial(
+  _cholesky_cpu_gpu_translation_rule, lapack.potrf,
+  not hasattr(lapack, "jax_potrf"))
+
+# TODO(phawkins): remove after the minimum jaxlib version is 0.1.38.
+if hasattr(cusolver, "potrf"):
+  xla.backend_specific_translations['gpu'][cholesky_p] = partial(
+    _cholesky_cpu_gpu_translation_rule, cusolver.potrf, True)
 
 # Asymmetric eigendecomposition
 
@@ -392,7 +404,7 @@ def _triangular_solve_cpu_translation_rule(
     c, a, b, left_side, lower, transpose_a, conjugate_a, unit_diagonal):
   shape = c.GetShape(a)
   dtype = shape.element_type().type
-  if len(shape.dimensions()) == 2 and dtype in _cpu_lapack_types:
+  if len(shape.dimensions()) == 2 and onp.dtype(dtype) in _cpu_lapack_types:
     if conjugate_a and not transpose_a:
       a = c.Conj(a)
       conjugate_a = False
@@ -726,17 +738,11 @@ xla.translations[qr_p] = qr_translation_rule
 ad.primitive_jvps[qr_p] = qr_jvp_rule
 batching.primitive_batchers[qr_p] = qr_batching_rule
 
-# TODO(phawkins): make unconditional after the minimum Jaxlib version is
-# increased past 0.1.28.
-if hasattr(lapack, "geqrf"):
-  xla.backend_specific_translations['cpu'][qr_p] = partial(
-    _qr_cpu_gpu_translation_rule, lapack.geqrf, lapack.orgqr)
+xla.backend_specific_translations['cpu'][qr_p] = partial(
+  _qr_cpu_gpu_translation_rule, lapack.geqrf, lapack.orgqr)
 
-# TODO(phawkins): make unconditional after the minimum Jaxlib version is
-# increased past 0.1.28.
-if hasattr(cusolver, "geqrf"):
-  xla.backend_specific_translations['gpu'][qr_p] = partial(
-    _qr_cpu_gpu_translation_rule, cusolver.geqrf, cusolver.orgqr)
+xla.backend_specific_translations['gpu'][qr_p] = partial(
+  _qr_cpu_gpu_translation_rule, cusolver.geqrf, cusolver.orgqr)
 
 
 # Singular value decomposition

@@ -40,7 +40,7 @@ from jax import numpy as lnp
 from jax import test_util as jtu
 from jax import dtypes
 from jax import tree_util
-from jax.interpreters import partial_eval
+from jax.interpreters import partial_eval, xla
 from jax.test_util import check_grads
 
 from jax.config import config
@@ -96,7 +96,7 @@ def op_record(name, nargs, dtypes, shapes, rng_factory, diff_modes,
 
 JAX_ONE_TO_ONE_OP_RECORDS = [
     op_record("abs", 1, number_dtypes, all_shapes, jtu.rand_default, ["rev"]),
-    op_record("add", 2, number_dtypes, all_shapes, jtu.rand_default, ["rev"]),
+    op_record("add", 2, all_dtypes, all_shapes, jtu.rand_default, ["rev"]),
     op_record("ceil", 1, float_dtypes, all_shapes, jtu.rand_default, []),
     op_record("conj", 1, number_dtypes, all_shapes, jtu.rand_default, ["rev"]),
     op_record("equal", 2, all_dtypes, all_shapes, jtu.rand_some_equal, []),
@@ -109,23 +109,23 @@ JAX_ONE_TO_ONE_OP_RECORDS = [
                          onp.float64: 1e-12, onp.complex64: 2e-4,
                          onp.complex128: 1e-12}, check_dtypes=False),
     op_record("floor", 1, float_dtypes, all_shapes, jtu.rand_default, []),
-    op_record("greater", 2, number_dtypes, all_shapes, jtu.rand_some_equal, []),
-    op_record("greater_equal", 2, number_dtypes, all_shapes, jtu.rand_some_equal, []),
-    op_record("less", 2, number_dtypes, all_shapes, jtu.rand_some_equal, []),
-    op_record("less_equal", 2, number_dtypes, all_shapes, jtu.rand_some_equal, []),
+    op_record("greater", 2, all_dtypes, all_shapes, jtu.rand_some_equal, []),
+    op_record("greater_equal", 2, all_dtypes, all_shapes, jtu.rand_some_equal, []),
+    op_record("less", 2, all_dtypes, all_shapes, jtu.rand_some_equal, []),
+    op_record("less_equal", 2, all_dtypes, all_shapes, jtu.rand_some_equal, []),
     op_record("log", 1, number_dtypes, all_shapes, jtu.rand_positive, ["rev"],
               inexact=True),
     op_record("logical_and", 2, all_dtypes, all_shapes, jtu.rand_bool, []),
     op_record("logical_not", 1, all_dtypes, all_shapes, jtu.rand_bool, []),
     op_record("logical_or", 2, all_dtypes, all_shapes, jtu.rand_bool, []),
     op_record("logical_xor", 2, all_dtypes, all_shapes, jtu.rand_bool, []),
-    op_record("maximum", 2, number_dtypes, all_shapes, jtu.rand_some_inf, []),
-    op_record("minimum", 2, number_dtypes, all_shapes, jtu.rand_some_inf, []),
-    op_record("multiply", 2, number_dtypes, all_shapes, jtu.rand_default, ["rev"]),
+    op_record("maximum", 2, all_dtypes, all_shapes, jtu.rand_some_inf, []),
+    op_record("minimum", 2, all_dtypes, all_shapes, jtu.rand_some_inf, []),
+    op_record("multiply", 2, all_dtypes, all_shapes, jtu.rand_default, ["rev"]),
     op_record("negative", 1, number_dtypes, all_shapes, jtu.rand_default, ["rev"]),
     op_record("nextafter", 2, [f for f in float_dtypes if f != lnp.bfloat16],
               all_shapes, jtu.rand_default, ["rev"], inexact=True, tolerance=0),
-    op_record("not_equal", 2, number_dtypes, all_shapes, jtu.rand_some_equal, ["rev"]),
+    op_record("not_equal", 2, all_dtypes, all_shapes, jtu.rand_some_equal, ["rev"]),
     op_record("array_equal", 2, number_dtypes, all_shapes, jtu.rand_some_equal, ["rev"]),
     op_record("reciprocal", 1, inexact_dtypes, all_shapes, jtu.rand_default, []),
     op_record("subtract", 2, number_dtypes, all_shapes, jtu.rand_default, ["rev"]),
@@ -582,6 +582,18 @@ class LaxBackedNumpyTests(jtu.JaxTestCase):
     args_maker = lambda: [rng(shape, dtype)]
     self._CheckAgainstNumpy(onp_fun, lnp_fun, args_maker, check_dtypes=False)
     self._CompileAndCheck(lnp_fun, args_maker, check_dtypes=True)
+
+  @parameterized.named_parameters(jtu.cases_from_list(
+      {"testcase_name": "_shape={}".format(
+          jtu.format_shape_dtype_string(shape, dtype)),
+       "shape": shape, "dtype": dtype}
+      for shape in all_shapes for dtype in all_dtypes))
+  def testNonzero(self, shape, dtype):
+    rng = jtu.rand_some_zero()
+    onp_fun = lambda x: onp.nonzero(x)
+    lnp_fun = lambda x: lnp.nonzero(x)
+    args_maker = lambda: [rng(shape, dtype)]
+    self._CheckAgainstNumpy(onp_fun, lnp_fun, args_maker, check_dtypes=False)
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {"testcase_name": "{}_inshape={}_axis={}".format(
@@ -1066,6 +1078,16 @@ class LaxBackedNumpyTests(jtu.JaxTestCase):
     self._CompileAndCheck(lnp_fun, args_maker, check_dtypes=True)
 
   @parameterized.named_parameters(jtu.cases_from_list(
+      {"testcase_name": "_ndim={}_n={}".format(ndim, n),
+       "ndim": ndim, "n": n}
+      for ndim in [0, 1, 4]
+      for n in [0, 1, 7]))
+  def testDiagIndices(self, ndim, n):
+    onp.testing.assert_equal(onp.diag_indices(n, ndim),
+                             lnp.diag_indices(n, ndim))
+
+
+  @parameterized.named_parameters(jtu.cases_from_list(
       {"testcase_name": "_shape={}_k={}".format(
           jtu.format_shape_dtype_string(shape, dtype), k),
        "dtype": dtype, "shape": shape, "k": k, "rng_factory": jtu.rand_default}
@@ -1185,7 +1207,7 @@ class LaxBackedNumpyTests(jtu.JaxTestCase):
           onp.dtype(out_dtype).name if out_dtype else "None"),
        "shape": shape, "fill_value_dtype": fill_value_dtype,
        "out_dtype": out_dtype, "rng_factory": jtu.rand_default}
-      for shape in array_shapes
+      for shape in array_shapes + [3, onp.array(7, dtype=onp.int32)]
       for fill_value_dtype in default_dtypes
       for out_dtype in [None] + default_dtypes))
   def testFull(self, shape, fill_value_dtype, out_dtype, rng_factory):
@@ -1195,6 +1217,23 @@ class LaxBackedNumpyTests(jtu.JaxTestCase):
     args_maker = lambda: [rng((), fill_value_dtype)]
     self._CheckAgainstNumpy(onp_fun, lnp_fun, args_maker, check_dtypes=True)
     self._CompileAndCheck(lnp_fun, args_maker, check_dtypes=True)
+
+  @parameterized.named_parameters(
+    jtu.cases_from_list(
+      {"testcase_name": ("_op={}_shape={}_dtype={}").format(op, shape, dtype),
+       "onp_op": getattr(onp, op), "lnp_op": getattr(lnp, op),
+       "shape": shape, "dtype": dtype}
+      for op in ["zeros", "ones"]
+      for shape in [2, (), (2,), (3, 0), onp.array((4, 5, 6), dtype=onp.int32),
+                    onp.array(4, dtype=onp.int32)]
+      for dtype in all_dtypes))
+  def testZerosOnes(self, onp_op, lnp_op, shape, dtype):
+    rng = jtu.rand_default()
+    def args_maker(): return []
+    onp_op = partial(onp_op, shape, dtype)
+    lnp_op = partial(lnp_op, shape, dtype)
+    self._CheckAgainstNumpy(onp_op, lnp_op, args_maker, check_dtypes=True)
+    self._CompileAndCheck(lnp_op, args_maker, check_dtypes=True)
 
   @parameterized.named_parameters(jtu.cases_from_list(
       {"testcase_name": "_inshape={}_filldtype={}_outdtype={}".format(
@@ -1903,6 +1942,18 @@ class LaxBackedNumpyTests(jtu.JaxTestCase):
 
 
   @parameterized.named_parameters(jtu.cases_from_list(
+      {"testcase_name": "_shape={}".format(
+          jtu.format_shape_dtype_string(shape, dtype)),
+       "shape": shape, "dtype": dtype}
+      for shape in all_shapes for dtype in all_dtypes))
+  def testWhereOneArgument(self, shape, dtype):
+    rng = jtu.rand_some_zero()
+    onp_fun = lambda x: onp.where(x)
+    lnp_fun = lambda x: lnp.where(x)
+    args_maker = lambda: [rng(shape, dtype)]
+    self._CheckAgainstNumpy(onp_fun, lnp_fun, args_maker, check_dtypes=False)
+
+  @parameterized.named_parameters(jtu.cases_from_list(
     {"testcase_name": "_{}".format("_".join(
         jtu.format_shape_dtype_string(shape, dtype)
         for shape, dtype in zip(shapes, dtypes))),
@@ -1910,7 +1961,7 @@ class LaxBackedNumpyTests(jtu.JaxTestCase):
     for shapes in filter(_shapes_are_broadcast_compatible,
                          CombosWithReplacement(all_shapes, 3))
     for dtypes in CombosWithReplacement(all_dtypes, 3)))
-  def testWhere(self, rng_factory, shapes, dtypes):
+  def testWhereThreeArgument(self, rng_factory, shapes, dtypes):
     rng = rng_factory()
     args_maker = self._GetArgsMaker(rng_factory(), shapes, dtypes)
     def onp_fun(cond, x, y):
@@ -2023,11 +2074,10 @@ class LaxBackedNumpyTests(jtu.JaxTestCase):
     self.assertAllClose(lnp.arange(53, 5, -3),
                         onp.arange(53, 5, -3, dtype=lnp.int_),
                         check_dtypes=True)
-    # TODO(mattjj): make these tests work when jax_enable_x64=True
-    # self.assertAllClose(lnp.arange(77, dtype=float),
-    #                     onp.arange(77, dtype=float), check_dtypes=True)
-    # self.assertAllClose(lnp.arange(2, 13, dtype=int),
-    #                     onp.arange(2, 13, dtype=int), check_dtypes=True)
+    self.assertAllClose(lnp.arange(77, dtype=float),
+                        onp.arange(77, dtype=float), check_dtypes=True)
+    self.assertAllClose(lnp.arange(2, 13, dtype=int),
+                        onp.arange(2, 13, dtype=int), check_dtypes=True)
     self.assertAllClose(lnp.arange(0, 1, -0.5),
                         onp.arange(0, 1, -0.5, dtype=lnp.float_),
                         check_dtypes=True)
@@ -2043,6 +2093,10 @@ class LaxBackedNumpyTests(jtu.JaxTestCase):
                      type(onp.arange(77, dtype=onp.int32)))
     self.assertTrue(type(lnp.arange(77, dtype=lnp.int32)) ==
                     type(lax.iota(onp.int32, 77)))
+
+    # test laziness for int dtypes
+    self.assertTrue(xla.is_device_constant(lnp.arange(77)))
+    self.assertTrue(xla.is_device_constant(lnp.arange(77, dtype=lnp.int32)))
 
   def testIssue830(self):
     a = lnp.arange(4, dtype=lnp.complex64)
@@ -2513,6 +2567,19 @@ class LaxBackedNumpyTests(jtu.JaxTestCase):
         HIGHEST,
         partial(lnp.inner, precision=HIGHEST),
         ones_1d, ones_1d)
+
+  def testZerosShapeErrors(self):
+    # see https://github.com/google/jax/issues/1822
+    self.assertRaisesRegex(
+        TypeError,
+        "Shapes must be 1D sequences of concrete values of integer type.*",
+        lambda: lnp.zeros(1.))
+    self.assertRaisesRegex(
+        TypeError,
+        "Shapes must be 1D sequences of concrete values of integer type.*\n"
+        "If using `jit`, try using `static_argnums` or applying `jit` to smaller subfunctions.",
+        lambda: api.jit(lnp.zeros)(2))
+
 
 # Most grad tests are at the lax level (see lax_test.py), but we add some here
 # as needed for e.g. particular compound ops of interest.

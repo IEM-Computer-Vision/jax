@@ -179,6 +179,7 @@ Not every function in NumPy is implemented; contributions are welcome!
     nansum
     negative
     nextafter
+    nonzero
     not_equal
     ones
     ones_like
@@ -257,6 +258,11 @@ jax.numpy.fft
 
   fftn
   ifftn
+  fft
+  ifft
+  fft2
+  ifft2
+  fftfreq
 
 jax.numpy.linalg
 ----------------
